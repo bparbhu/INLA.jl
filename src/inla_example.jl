@@ -178,8 +178,6 @@ plot(df_posterior,
 
 # comparison with R-INLA
 
-using DataFrames, DataFramesMeta, Gadfly, StatsBase
-
 # Data frame for plotting
 df_prior = vcat(
     @linq DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.15),
