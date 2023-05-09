@@ -229,8 +229,6 @@ res <- inla(
 
 res = R"res"
 
-using DataFrames, DataFramesMeta, Gadfly, RCall
-
 # Get the R-INLA marginals
 marginals_hyperpar = rcopy(R"res$marginals.hyperpar$`Rho for i`")
 
