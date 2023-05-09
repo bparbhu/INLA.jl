@@ -56,15 +56,23 @@ end
 
 # calculate the log joint distribution
 function calc_ljoint(y, x, alpha, a=1, b=1)
-    chol_Q = cholesky(calc_Q(alpha))
-    logdet_Q_half = sum(log.(diag(chol_Q.L)))
-    quad_form = dot(chol_Q.L * x, x)
-    
-    res = sum(beta_true .* x .* y .- log1p.(exp.(beta_true .* x))) +
-          logdet_Q_half - 0.5 * quad_form +
-          calc_lprior(alpha, a, b)
-    return res
+    if alpha < 0 || alpha > 1
+        return -Inf
+    end
+
+    z = x * alpha
+    px = 1 ./ (1 .+ exp.(-z))
+    logp = log.(clamp.(px, eps(), 1-eps()))
+    log1_p = log.(clamp.(1 .- px, eps(), 1-eps()))
+
+    ll_y = y .* logp + (1 .- y) .* log1_p
+    ll_alpha = log(alpha) * (a - 1) + log(1 - alpha) * (b - 1)
+    lp_alpha = ll_alpha + sum(ll_y)
+
+    return lp_alpha
 end
+
+
 
 # the function f(x) and its negative hessian
 function calc_ff(x, alpha)
@@ -132,8 +140,10 @@ end
 function calc_lpost(alpha)
     x0 = calc_x0(alpha)
     chol_h = cholesky(calc_neg_hess_ff(x0, alpha))
-    return calc_ljoint(y, x0, alpha) - sum(log.(diag(chol_h.L)))
+    log_det = 2 * sum(log.(diag(chol_h)))
+    return calc_ljoint(y, x0, alpha) - log_det
 end
+
 
 alpha_vec = range(-0.95, 0.95, length=31)
 lpost = map(calc_lpost, alpha_vec)
@@ -148,12 +158,11 @@ function calc_Z(alpha_vec, lpost_vec)
 end
 
 
-lpost = lpost - mean(lpost) # to avoid numerical overflow
+lpost .= lpost .- mean(lpost) # to avoid numerical overflow
 Z = calc_Z(alpha_vec, lpost)
 
 # plot the unnormalised log-posterior and the normalised posterior:
 # Data frame for plotting
-Z = calc_Z(alpha_vec, lpost)
 df_posterior = vcat(
     @linq DataFrame(alpha=alpha_vec, posterior=lpost,
                     type="unnormalised_log_posterior"),
