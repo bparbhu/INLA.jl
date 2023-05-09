@@ -1,4 +1,4 @@
-using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall
+using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose
 
 Random.seed!(1234)
 n = 100
@@ -25,14 +25,19 @@ df = DataFrame(i = 1:n, x = x_true, p = p_true, y = y)
 df_long = stack(df, [:x, :p, :y], :i, variable_name=:variable, value_name=:value)
 
 # plot the time series x_t, p_t, and y_t in 3 panels
-plot(df_long, x=:i, y=:value, color=:variable,
-    Geom.line,
-    Scale.y_continuous(minvalue=-0.5, maxvalue=1.5),
-    Guide.xlabel(nothing), Guide.ylabel(nothing),
-    Guide.colorkey(title="", pos=[0.0, -0.1]),
-    Coord.cartesian(xmin=0, xmax=100),
-    Facet.grid(:variable .=> nothing, ncol=1)
-)
+# Separate data for each variable
+df_x = filter(row -> row[:variable] == "x", df_long)
+df_p = filter(row -> row[:variable] == "p", df_long)
+df_y = filter(row -> row[:variable] == "y", df_long)
+
+# Create plots for each variable
+plot_x = plot(df_x, x=:i, y=:value, color=:variable, Geom.line, Coord.cartesian(xmin=0, xmax=100), Guide.ylabel("x"))
+plot_p = plot(df_p, x=:i, y=:value, color=:variable, Geom.line, Coord.cartesian(xmin=0, xmax=100), Guide.ylabel("p"))
+plot_y = plot(df_y, x=:i, y=:value, color=:variable, Geom.line, Coord.cartesian(xmin=0, xmax=100), Guide.ylabel("y"))
+
+# Combine the plots vertically
+final_plot = vstack(plot_x, plot_p, plot_y)
+
 
 # The sparse precision matrix Q
 function calc_Q(alpha)
