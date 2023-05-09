@@ -170,19 +170,31 @@ df_posterior = vcat(
                     type="normalised_posterior")
 )
 
+
 # Plot unnormalised log posterior and normalised posterior in 2 panels
-plot(df_posterior,
+vline_layer = layer(x=[alpha_true], y=[0], ymax=[1], Geom.line, linestyle=:dash, Theme(line_width=1mm))
+
+plot_unnorm = plot(df_posterior[df_posterior.type .== "unnormalised_log_posterior", :],
     x=:alpha, y=:posterior, color=:type,
     Geom.line, Geom.point,
     Guide.xlabel("alpha"), Guide.ylabel("posterior"),
-    layer(Geom.vline(xintercept=[alpha_true], linestyle=:dash)),
+    vline_layer,
     Coord.cartesian(xmin=-0.95, xmax=0.95),
-    Scale.color_discrete_manual("blue", "red"),
-    Guide.title("Unnormalised Log Posterior and Normalised Posterior"),
-    Guide.colorkey(title=""),
-    Theme(key_position=:none),
-    Facet.grid(:type .=> "unnormalised_log_posterior", :type .=> "normalised_posterior")
+    Scale.color_discrete_manual("blue"),
+    Guide.title("Unnormalised Log Posterior")
 )
+
+plot_norm = plot(df_posterior[df_posterior.type .== "normalised_posterior", :],
+    x=:alpha, y=:posterior, color=:type,
+    Geom.line, Geom.point,
+    Guide.xlabel("alpha"), Guide.ylabel("posterior"),
+    vline_layer,
+    Coord.cartesian(xmin=-0.95, xmax=0.95),
+    Scale.color_discrete_manual("red"),
+    Guide.title("Normalised Posterior")
+)
+
+hstack(plot_unnorm, plot_norm)
 
 
 # comparison with R-INLA
