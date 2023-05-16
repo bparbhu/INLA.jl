@@ -1,5 +1,6 @@
 using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose, LinearAlgebra
 
+
 Random.seed!(1234)
 n = 100
 alpha_true = 0.6
@@ -236,74 +237,256 @@ plot_combined = hstack(plot_normalized, plot_other)
 # comparison with R-INLA
 
 # Data frame for plotting
+using DataFrames, DataFramesMeta, StatsBase, Random, CategoricalArrays
+
 df_prior = vcat(
-    @linq DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.15),
-                    type="default prior N(0,0.15)"),
-    @linq DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.5),
-                    type="new prior N(0,0.5)")
+    DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.15), 
+              type="default prior N(0,0.15)"),
+    DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.5), 
+              type="new prior N(0,0.5)")
 )
 
 @transform!(df_prior, alpha = (exp.(:logit_alpha) .- 1) ./ (exp.(:logit_alpha) .+ 1))
+
 df_prior_long = stack(df_prior, [:logit_alpha, :alpha], :type)
 
+# Renaming columns to match the R version
+rename!(df_prior_long, :variable => :transformation, :value => :value)
+
+# Reordering levels to match the R version
+df_prior_long.transformation = categorical(df_prior_long.transformation, 
+                                           ordered=true, 
+                                           levels=["logit_alpha", "alpha"])
+
+
+
+
 # Plot distributions of logit(alpha) and alpha for the two priors in 4 panels
-plot(df_prior_long,
-    x=:value, color=:variable, group=:type,
-    Geom.histogram(bincount=30),
-    Guide.xlabel("value"), Guide.ylabel(""),
-    Coord.cartesian(xmin=-3, xmax=3),
-    Scale.color_discrete_manual("blue", "red"),
-    Guide.colorkey(title=""),
-    Theme(key_position=:none),
-    Facet.grid(:type .=> "default prior N(0,0.15)", :type .=> "new prior N(0,0.5)", :variable)
-)
+df1 = df_prior_long[df_prior_long.type .== "default prior N(0,0.15)", :]
+df2 = df_prior_long[df_prior_long.type .== "new prior N(0,0.5)", :]
+
+p1 = plot(df1, x=:value, color=:transformation, Geom.histogram(bincount=30),
+          Guide.xlabel("value"), Guide.ylabel(""),
+          Coord.cartesian(xmin=-3, xmax=3),
+          Scale.color_discrete_manual("blue", "red"),
+          Guide.colorkey(title=""),
+          Theme(key_position=:none))
+
+p2 = plot(df2, x=:value, color=:transformation, Geom.histogram(bincount=30),
+          Guide.xlabel("value"), Guide.ylabel(""),
+          Coord.cartesian(xmin=-3, xmax=3),
+          Scale.color_discrete_manual("blue", "red"),
+          Guide.colorkey(title=""),
+          Theme(key_position=:none))
+
+# Stacking plots vertically
+vstack(p1, p2)
 
 
 
 R"""
 library(INLA)
-"""
+library(Matrix)
+library(tidyverse)
 
-theta1_true = log((1 - alpha_true^2) / sigma_true^2)
-theta2_param = [0, 0.5]
+set.seed(1234)
+n = 100
+alpha_true = .6
+sigma_true = 0.1
+beta_true = 10
 
-R"""
-A_mat <- inla.as.sparse(diag($beta_true, $n, $n))
-"""
+# simulate x_t as AR1, p_t as logit(x_t), and y_t as Bernoulli(p_t)
+x_true = arima.sim(n=n, model=list(ar=alpha_true), sd=sigma_true) %>% as.numeric
+p_true = 1 / (1 + exp(-beta_true * x_true))
+y = rbinom(n, 1, p_true)
 
-inla_formula = "y ~ -1 + f(i, model='ar1', hyper=list(theta1 = list(fixed=TRUE, initial=$theta1_true), theta2 = list(param=$theta2_param)))"
-inla_data = DataFrame(i=1:n, y=y)
+# create data frame for plotting
+df = data_frame(i = 1:n, x = x_true, p = p_true, y = y) %>% 
+  gather(key='variable', value='value', -i) %>%
+  mutate(variable = factor(variable, levels=c('x','p','y'))) 
 
-R"""
-res <- inla(
-    formula=$inla_formula,
-    data=$inla_data,
-    family='binomial',
-    Ntrials=rep(1, $n),
-    control.predictor=list(A = $A_mat)
+# plot the time series x_t, p_t, and y_t in 3 panels
+ggplot(df, aes(x=i, y=value, color=variable)) + 
+  geom_line(na.rm=TRUE, show.legend=FALSE) + 
+  facet_wrap(~variable, ncol=1, scales='free_y') + 
+  xlim(0,100) + labs(x=NULL, y=NULL)
+
+
+calc_Q = function(alpha) {
+  1 / sigma_true^2 * Matrix::bandSparse(n, k=0:1, 
+                                        diagonals = list(c(1, 1 + alpha^2, 1) %>% rep(c(1, n-2, 1)), 
+                                                         -alpha %>% rep(n-1)), 
+                                        symmetric=TRUE)
+}
+
+calc_lprior = function(alpha, a=1, b=1) {
+  (a-1) * log((alpha + 1) / 2) + (b-1) * log(1 - (alpha+1)/2)
+}
+
+calc_ljoint = function(y, x, alpha, a=1, b=1) {
+  chol_Q = calc_Q(alpha) %>% chol
+  logdet_Q_half = chol_Q %>% diag %>% log %>% sum
+  quad_form = crossprod(chol_Q %*% x) %>% drop
+  res = 
+    sum(beta_true * x * y - log1p(exp(beta_true * x))) + 
+    logdet_Q_half - 0.5 * quad_form + 
+    calc_lprior(alpha, a, b)
+  return(res)
+}
+
+calc_ff = function(x, alpha) {
+  sum(beta_true * x * y - log1p(exp(beta_true * x))) - 
+    0.5 * drop(as.matrix(x %*% calc_Q(alpha) %*% x))
+}
+
+calc_grad_ff = function(x, alpha) {
+  beta_true * y - 
+    beta_true * exp(beta_true * x) / (1 + exp(beta_true * x)) - 
+    drop(as.matrix(calc_Q(alpha) %*% x))
+}
+
+calc_neg_hess_ff = function(x, alpha) {
+  calc_Q(alpha) + 
+    diag(beta_true^2 * exp(beta_true * x) / (1 + exp(beta_true * x))^2)
+}
+
+
+
+calc_g0 = function(x) {
+  sum(beta_true * x * y - log1p(exp(beta_true * x)))
+}
+calc_g1 = function(x) {
+  beta_true * y - beta_true * exp(beta_true * x) / (1 + exp(beta_true * x)) 
+}
+calc_g2 = function(x) {
+  (-1) * beta_true^2 * exp(beta_true * x) / (1 + exp(beta_true * x))^2
+}
+
+calc_x0 = function(alpha, tol=1e-12) {
+  Q = calc_Q(alpha)
+  x = x0 = rep(0, n)
+  while(1) {
+    g1 = calc_g1(x)
+    g2 = calc_g2(x)
+    x = drop(solve(Q - bandSparse(n=n, k=0, diagonals=list(g2))) %*% 
+               (g1 - x0 * g2))
+    if (mean((x-x0)^2 < tol)) {
+      break
+    } else {
+      x0 = x
+    }
+  }
+  return(x)
+}
+
+
+calc_x0_brute = function(alpha) {
+  optim(par=rep(0, n), fn=calc_ff, gr=calc_grad_ff, alpha=alpha, 
+        control=list(fnscale=-1), method='BFGS')$par
+}
+
+calc_lpost = function(alpha) {
+  x0 = calc_x0(alpha)
+  chol_h = chol(calc_neg_hess_ff(x0, alpha))
+  calc_ljoint(y, x0, alpha) - sum(log(diag(chol_h)))
+}
+alpha_vec = seq(-.95, .95, len=31)
+lpost = sapply(alpha_vec, calc_lpost)
+
+calc_Z = function(alpha_vec, lpost_vec) {
+  nn = length(alpha_vec)
+  hh = alpha_vec[2] - alpha_vec[1]
+  ww = c(1, rep(c(4,2), (nn-3)/2), c(4,1))
+  return(sum(ww * exp(lpost_vec)) * hh / 3)
+}
+
+lpost = lpost - mean(lpost) # to avoid numerical overflow
+Z = calc_Z(alpha_vec, lpost)
+
+df_posterior = 
+  bind_rows(
+    data_frame(alpha=alpha_vec, posterior=lpost, 
+               type='unnormalised_log_posterior'),
+    data_frame(alpha=alpha_vec, posterior=exp(lpost)/Z, 
+               type='normalised_posterior')) %>% 
+  mutate(type = factor(type, levels=c('unnormalised_log_posterior', 
+                                      'normalised_posterior')))
+
+# plot unnormalised log posterior and normalised posterior in 2 panels
+ggplot(df_posterior, aes(x=alpha, y=posterior)) + 
+  geom_line() + geom_point() +
+  geom_vline(aes(xintercept=alpha_true), linetype='dashed') + 
+  facet_wrap(~type, scale='free_y', ncol=1) +
+  theme(legend.position='none')
+
+# data frame for plotting
+df_prior = 
+  bind_rows(
+    data_frame(logit_alpha = rnorm(1e4,0,sqrt(1/0.15)), 
+               type='default prior N(0,0.15)'), 
+    data_frame(logit_alpha = rnorm(1e4,0,sqrt(1/0.5)), 
+               type='new prior N(0,0.5)')) %>% 
+  group_by(type) %>% 
+  mutate(alpha = (exp(logit_alpha)-1)/(exp(logit_alpha) + 1)) %>%
+  ungroup %>%
+  gather(key='transformation', value='value', -type) %>%
+  mutate(transformation = factor(transformation, levels=c('logit_alpha', 'alpha'))) 
+
+# plot distributions of logit(alpha) and alpha for the two priors in 4 panels
+ggplot(df_prior, aes(x=value)) + 
+  geom_histogram(bins=30) + 
+  facet_grid(type ~ transformation, scale='free') +
+  labs(x=NULL, y=NULL)
+
+theta1_true = log((1-alpha_true^2)/sigma_true^2) 
+theta2_param = c(0, 0.5)
+A_mat = diag(beta_true, n, n) %>% inla.as.sparse
+
+inla_formula = 
+  y ~ -1 + 
+  f(i, model='ar1', hyper=list(
+    theta1 = list(fixed=TRUE, initial=theta1_true),
+    theta2 = list(param=theta2_param)))
+inla_data = data_frame(i=1:n, y=y)
+
+res = inla(
+  formula=inla_formula, 
+  data=inla_data, 
+  family='binomial', 
+  Ntrials=rep(1,n), 
+  control.predictor=list(A = A_mat)
 )
 """
 
 res = R"res"
 
 # Get the R-INLA marginals
-marginals_hyperpar = rcopy(R"res$marginals.hyperpar$`Rho for i`")
+marginals_hyperpar_df = DataFrame(marginals_hyperpar, [:x, :y])
 
 df_compare = vcat(
-    @linq DataFrame(alpha=marginals_hyperpar[:x], posterior=marginals_hyperpar[:y], type="R-INLA"),
+    @linq DataFrame(alpha=marginals_hyperpar_df.x, posterior=marginals_hyperpar_df.y, type="R-INLA"),
     @linq DataFrame(alpha=alpha_vec, posterior=exp.(lpost) ./ Z, type="inla_from_scratch")
 )
 
+scratch_df = DataFrame(alpha=alpha_vec, posterior=exp.(lpost) ./ Z, type="inla_from_scratch")
+
 # Plot posteriors for inla-from-scratch and R-INLA
-plot(df_compare,
-    x=:alpha, y=:posterior, color=:type,
-    Geom.line, Geom.point,
-    Geom.vline(xintercept=alpha_true),
+df_concatenated = vcat([df[1] for df in df_compare]...) 
+
+# plot
+p1 = plot(df_concatenated, x=:alpha, y=:posterior, color=:type, Geom.line, Geom.point,
     Guide.xlabel("alpha"), Guide.ylabel("posterior"),
     Guide.colorkey(title=""),
-    Scale.color_discrete_manual("blue", "red"),
-    Theme(key_position=:top)
-)
+    Scale.color_discrete_manual("blue", "red"))
+
+p2 =  plot(scratch_df, x=:alpha, y=:posterior, color=:type, Geom.line, Geom.point,
+    Guide.xlabel("alpha"), Guide.ylabel("posterior"),
+    Guide.colorkey(title=""),
+    Scale.color_discrete_manual("blue", "red"))
+
+
+draw(SVG(6inch, 3inch), hstack(p1, p2))
+
 
 
 # Define a function to calculate posterior x given alpha
