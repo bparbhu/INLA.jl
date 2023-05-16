@@ -1,4 +1,4 @@
-using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose, LinearAlgebra
+using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose, LinearAlgebra, CategoricalArrays
 
 
 Random.seed!(1234)
