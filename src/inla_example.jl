@@ -210,40 +210,26 @@ println("Any missing in 'posterior' column of df_posterior_unnormalized: ", any(
 println("Any missing in 'posterior' column of df_posterior_other: ", any(ismissing, df_posterior_other.posterior))
 
 
-
-# Create the two plots
 # Create the two plots
 plot_normalized = plot(df_posterior_normalized,
     x=:alpha, y=:posterior,
     Geom.line, Geom.point,
     layer(xintercept=[alpha_true], Geom.vline, Theme(line_style=[:dash], line_width=1mm, default_color=colorant"black")),
-    Guide.xlabel("alpha"),
+    Guide.xlabel("alpha_normalized"),
     Guide.yticks(ticks=yticks_normalized_log_posterior),
-    Guide.colorkey(""),
     Theme(panel_fill=colorant"transparent")
 )
 plot_other = plot(df_posterior_other,
     x=:alpha, y=:posterior,
     Geom.line, Geom.point,
     layer(xintercept=[alpha_true], Geom.vline, Theme(line_style=[:dash], line_width=1mm, default_color=colorant"black")),
-    Guide.xlabel("alpha"),
+    Guide.xlabel("alpha_unnormalized"),
     Guide.yticks(ticks=yticks_other),
-    Guide.colorkey(""),
     Theme(panel_fill=colorant"transparent")
 )
 
 # Combine the two plots
-plot_combined = hstack(plot_unnormalized, plot_other)
-
-# Combine the two plots
-plot_combined = hstack(plot_unnormalized, plot_other)
-
-
-
-
-
-
-
+plot_combined = hstack(plot_normalized, plot_other)
 
 
 
