@@ -1,4 +1,4 @@
-using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose
+using DataFrames, DataFramesMeta, Gadfly, Random, Distributions, StatsBase, SparseArrays, Optim, RCall, Compose, LinearAlgebra
 
 Random.seed!(1234)
 n = 100
@@ -56,14 +56,13 @@ end
 
 # calculate the log joint distribution
 function calc_ljoint(y, x, alpha, a=1, b=1)
-    if alpha < 0 || alpha > 1
-        return -Inf
-    end
+    offset = 1e-10
+    alpha = clamp(alpha, offset, 1-offset) # avoid exact 0 or 1
 
     z = x * alpha
     px = 1 ./ (1 .+ exp.(-z))
-    logp = log.(clamp.(px, eps(), 1-eps()))
-    log1_p = log.(clamp.(1 .- px, eps(), 1-eps()))
+    logp = log.(clamp.(px, 1e-10, 1-1e-10))
+    log1_p = log.(clamp.(1 .- px, 1e-10, 1-1e-10))
 
     ll_y = y .* logp + (1 .- y) .* log1_p
     ll_alpha = log(alpha) * (a - 1) + log(1 - alpha) * (b - 1)
@@ -71,7 +70,6 @@ function calc_ljoint(y, x, alpha, a=1, b=1)
 
     return lp_alpha
 end
-
 
 
 # the function f(x) and its negative hessian
@@ -109,20 +107,19 @@ function calc_x0(alpha, tol=1e-12)
     x = x0 = zeros(n)
     
     while true
-        g1 = calc_g1(x)
-        g2 = calc_g2(x)
+        g1 = calc_g1(x0)
+        g2 = calc_g2(x0)
         
         x = (Q - Diagonal(g2)) \ (g1 .- x0 .* g2)
-        
         if mean((x .- x0).^2 .< tol) > 0.5
             break
-        else
-            x0 = x
         end
+        x0 = x
     end
     
     return x
 end
+
 
 
 function calc_x0_brute(alpha)
@@ -141,24 +138,39 @@ function calc_lpost(alpha)
     x0 = calc_x0(alpha)
     chol_h = cholesky(calc_neg_hess_ff(x0, alpha))
     log_det = 2 * sum(log.(diag(chol_h)))
-    return calc_ljoint(y, x0, alpha) - log_det
+    ljoint = calc_ljoint(y, x0, alpha)
+    println("alpha: ", alpha, ", x0: ", x0, ", chol_h: ", chol_h, ", calc_neg_hess_ff(x0, alpha): ", calc_neg_hess_ff(x0, alpha))
+    return ljoint - log_det
 end
 
 
 alpha_vec = range(-0.95, 0.95, length=31)
 lpost = map(calc_lpost, alpha_vec)
 
+#lpost .= lpost .- mean(lpost) # to avoid numerical overflow
 
-# Normalisation of the posterior
+
+lpost = [calc_lpost(alpha) for alpha in alpha_vec]
+println(lpost)
+
+
+# Normalization of the posterior
 function calc_Z(alpha_vec, lpost_vec)
     nn = length(alpha_vec)
     hh = alpha_vec[2] - alpha_vec[1]
     ww = vcat(1, repeat([4, 2], Int((nn - 3) / 2)), [4, 1])
-    return sum(ww .* exp.(lpost_vec)) * hh / 3
+
+    # replace -Inf with very large negative number before exponentiation
+    lpost_vec = replace(lpost_vec, -Inf => -1e300)
+    lpost_max = maximum(lpost_vec)
+
+    # use log-sum-exp trick to prevent overflow
+    exp_lpost_sum = log(sum(ww .* exp.(lpost_vec .- lpost_max)))
+
+    return exp_lpost_sum + lpost_max
 end
 
 
-lpost .= lpost .- mean(lpost) # to avoid numerical overflow
 Z = calc_Z(alpha_vec, lpost)
 
 # plot the unnormalised log-posterior and the normalised posterior:
@@ -166,35 +178,73 @@ Z = calc_Z(alpha_vec, lpost)
 df_posterior = vcat(
     @linq DataFrame(alpha=alpha_vec, posterior=lpost,
                     type="unnormalised_log_posterior"),
-    @linq DataFrame(alpha=alpha_vec, posterior=exp.(lpost) ./ Z,
+    @linq DataFrame(alpha=alpha_vec, posterior=exp.(lpost .- Z),
                     type="normalised_posterior")
 )
 
 
-# Plot unnormalised log posterior and normalised posterior in 2 panels
-vline_layer = layer(x=[alpha_true], y=[0], ymax=[1], Geom.line, linestyle=:dash, Theme(line_width=1mm))
-
-plot_unnorm = plot(df_posterior[df_posterior.type .== "unnormalised_log_posterior", :],
-    x=:alpha, y=:posterior, color=:type,
-    Geom.line, Geom.point,
-    Guide.xlabel("alpha"), Guide.ylabel("posterior"),
-    vline_layer,
-    Coord.cartesian(xmin=-0.95, xmax=0.95),
-    Scale.color_discrete_manual("blue"),
-    Guide.title("Unnormalised Log Posterior")
+# Create a combined DataFrame for both unnormalized_log_posterior and normalized_posterior
+combined_df = vcat(
+    DataFrame(alpha=alpha_vec, posterior=lpost, type="unnormalized_log_posterior"),
+    DataFrame(alpha=alpha_vec, posterior=exp.(lpost) ./ Z, type="normalized_posterior")
 )
 
-plot_norm = plot(df_posterior[df_posterior.type .== "normalised_posterior", :],
-    x=:alpha, y=:posterior, color=:type,
+# Create vline_layer
+vline_layer = layer(xintercept=[alpha_true], Geom.vline, Theme(line_style=[:dash], line_width=1mm, default_color=colorant"black"))
+
+
+
+# Define a function to create custom ytick labels
+# Define the y-ticks for the two types of plots
+yticks_normalized_log_posterior = [-5000, -4000, -3000]
+yticks_other = [0.0, 0.5, 1.0]
+
+# Create two separate dataframes, one for each type of plot
+df_posterior_normalized = DataFrame(alpha=alpha_vec, posterior=exp.(lpost) ./ Z, type="normalized_posterior")
+df_posterior_other = DataFrame(alpha=alpha_vec, posterior=lpost, type="unnormalized_log_posterior")
+
+
+println("df_posterior_unnormalized: ", size(df_posterior_normalized))
+println("df_posterior_other: ", size(df_posterior_other))
+println("Any missing in 'posterior' column of df_posterior_unnormalized: ", any(ismissing, df_posterior_normalized.posterior))
+println("Any missing in 'posterior' column of df_posterior_other: ", any(ismissing, df_posterior_other.posterior))
+
+
+
+# Create the two plots
+# Create the two plots
+plot_normalized = plot(df_posterior_normalized,
+    x=:alpha, y=:posterior,
     Geom.line, Geom.point,
-    Guide.xlabel("alpha"), Guide.ylabel("posterior"),
-    vline_layer,
-    Coord.cartesian(xmin=-0.95, xmax=0.95),
-    Scale.color_discrete_manual("red"),
-    Guide.title("Normalised Posterior")
+    layer(xintercept=[alpha_true], Geom.vline, Theme(line_style=[:dash], line_width=1mm, default_color=colorant"black")),
+    Guide.xlabel("alpha"),
+    Guide.yticks(ticks=yticks_normalized_log_posterior),
+    Guide.colorkey(""),
+    Theme(panel_fill=colorant"transparent")
+)
+plot_other = plot(df_posterior_other,
+    x=:alpha, y=:posterior,
+    Geom.line, Geom.point,
+    layer(xintercept=[alpha_true], Geom.vline, Theme(line_style=[:dash], line_width=1mm, default_color=colorant"black")),
+    Guide.xlabel("alpha"),
+    Guide.yticks(ticks=yticks_other),
+    Guide.colorkey(""),
+    Theme(panel_fill=colorant"transparent")
 )
 
-hstack(plot_unnorm, plot_norm)
+# Combine the two plots
+plot_combined = hstack(plot_unnormalized, plot_other)
+
+# Combine the two plots
+plot_combined = hstack(plot_unnormalized, plot_other)
+
+
+
+
+
+
+
+
 
 
 # comparison with R-INLA
