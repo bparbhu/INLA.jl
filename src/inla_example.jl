@@ -235,10 +235,7 @@ plot_combined = hstack(plot_normalized, plot_other)
 
 
 # comparison with R-INLA
-
 # Data frame for plotting
-using DataFrames, DataFramesMeta, StatsBase, Random, CategoricalArrays
-
 df_prior = vcat(
     DataFrame(logit_alpha=randn(10^4) .* sqrt(1/0.15), 
               type="default prior N(0,0.15)"),
