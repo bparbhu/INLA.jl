@@ -457,6 +457,9 @@ res = inla(
 
 res = R"res"
 
+marginals_hyperpar = rcopy(R"res$marginals.hyperpar$`Rho for i`")
+
+
 # Get the R-INLA marginals
 marginals_hyperpar_df = DataFrame(marginals_hyperpar, [:x, :y])
 
